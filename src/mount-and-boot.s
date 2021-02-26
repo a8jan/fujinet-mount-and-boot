@@ -10,6 +10,9 @@
 
 DSOFF	= 	$80 		; Device Slot table offset
 HSOFF	=	$82		; Host Slot table offset
+CURDS	=	$83		; Current Device slot
+CURDSHS	=	$84		; Current Device Slot - Host Slot
+CURDSM	=	$85		; Current Device Slot - Mode
 	
        ; PAGE 3
        ; DEVICE CONTROL BLOCK (DCB)
@@ -107,8 +110,46 @@ START:
 	STA	DSOFF
 	LDA	#>DS
 	STA	DSOFF+1
+
+	;; X = Device slot index
+	;; Y = Offset in table (for host slot and mode)
 	
-	JMP	COLDST		; Cold boot.
+	;; Is device slot occupied? (is there a host slot that isn't $FF?)
+	LDY	#$00		; Start at 0
+	LDX	#$00		; Start at 0 (Device slot 1)
+GHS:	LDA	(DSOFF),Y	; Get Host slot (first byte of table)
+	CMP	#$FF		; Is it an empty host slot?
+	BEQ	NXTDS		; Yes, go to next device slot.
+
+	;; Attempt to mount host.
+	STA	MHS		; Store in mount host slot table
+	LDA	#<MHSTBL	; Mount Host Slot table
+	LDY	#>MHSTBL	; ...
+	JSR	DOSIOV		; Do it.
+
+	;; Attempt to mount device slot
+	STX	MDSS		; Store Device Slot into mount device slot DCB table
+	LDY	#$01		; mode is offset 1 in retrieved device slot table
+	LDA	(DSOFF),Y	; Get mode
+	STA	MDSM		; Store in mode portion of DCB table
+	LDA	#<MDSTBL	; Mount Device Slot DCB table
+	LDY	#>MDSTBL	; ...
+	JSR	DOSIOV
+
+	;; Go to next device slot
+NXTDS:	CPX	#$08	        ; Are we at end?
+	BEQ	DONE		; We're done.
+	CLC			; Otherwise, Clear carry
+	LDA	DSOFF		; Low byte of device slot table offset
+	ADC	#DSENT		; Add 38.
+	STA	DSOFF		; And store
+	LDA	DSOFF+1		; High byte of device slot table offset
+	ADC	#00		; ...
+	STA	DSOFF+1		; Write back out with carry.
+	INX			; Next host slot index.
+	JMP	GHS		; Get next host slot.
+	
+DONE:	JMP	COLDST		; Cold boot.
 
 ;;; COPY TABLE TO DCB AND DO SIO CALL ;;;;;;;;;;;
 
