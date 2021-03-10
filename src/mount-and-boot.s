@@ -15,7 +15,8 @@ RTCLOK2 =	$14
 MSGL	= 	$80 		; MSG LO
 MSGH	= 	$81		; MSG HI
 SEL     =       $82		; Is select pressed? ($FF=yes)
-
+WFST    =       $83            	; WIFI Status (3=connected)
+WFTO	=	$84		; WIFI timeout counter (40 max)
 COLOR2	=	$02C6		; Background color (Mode 2)
 	
        ; PAGE 3
@@ -104,6 +105,18 @@ START:
 	STA	MSGH
 	JSR	DISPMSG
 
+	;; Wait for WIFI
+
+	JSR	WTWF
+	
+	;; Display Mount All msg
+
+	LDA	#<BOOTMT
+	STA	MSGL
+	LDA	#>BOOTMT
+	STA	MSGH
+	JSR	DISPMSG
+	
 	;; Send mount all command to #FujiNet
 	LDA	#<MATBL
 	LDY	#>MATBL
@@ -139,11 +152,7 @@ GDBOOT:	LDA	#<BOOTOK
 
 	;; Count down, while checking for select.
 	
-GOCOLD: LDA	#$00		; Clear clock
-	STA	RTCLOK0
-	STA	RTCLOK1
-	STA	RTCLOK2
-
+GOCOLD: JSR	RTCLR		; Clear RTCLOK
 CLLP:	LDA	CONSOL		; Check console switches
 	CMP	#$05
 	BNE	CLLP2		; Continue with loop
@@ -174,7 +183,63 @@ CLLP2:	LDX	RTCLOK2		; Read hi byte of clock
 	BCC	CLLP		; Nope
 BYE:	JMP	COLDST		; Cold boot.
 
+;;; Clear RTCLOK
+RTCLR:	LDA	#$00		; Clear clock
+	STA	RTCLOK0
+	STA	RTCLOK1
+	STA	RTCLOK2
+	RTS
+	
+;;; Wait for WIFI
+
+	;; Display waiting msg
+	
+WTWF:	LDA	#$00
+	STA	WFTO		; Clear WIFI timeout counter.
+	LDA	#<BOOTWF
+	STA	MSGL
+	LDA	#>BOOTWF
+	STA	MSGH
+	JSR	DISPMSG
+	JSR	RTCLR		; Clear RTCLOK
+	
+	;; Go ahead and check for consol, and bypass if needed
+
+	LDA	CONSOL
+	CMP	#$05
+	BEQ	SELPR
+
+	;; Finally, get the wifi status.
+	
+GETWF:	LDA	#<WFTBL
+	LDY	#>WFTBL
+	JSR	DOSIOV
+	LDA	WFST
+	ASL
+	ASL
+	ASL
+	ASL
+	STA	COLOR2
+	CMP	#$30		; Connected?
+	BEQ	WFDNE
+	CMP	#$60		; Not connected yet?
+	BEQ	WFWAI		; if so, wait.
+WFBAD:	JMP	MTERR		; Display bad and go to config
+WFWAI:	LDA	CONSOL		; Check console switches again
+	CMP	#$05		; SELECT?
+	BEQ	SELPR		; Yes, go to select pressed.
+	LDA	RTCLOK2		; Check clock
+	AND	#$3F		; check after 64 ticks.
+	BNE	WFWAI		; Not yet, continue waiting.
+	LDA	WFTO		; Check Timeout counter
+	CMP	#$20		; 32 tries?
+	BEQ	WFBAD		; Yes, bad, go to config
+	INC	WFTO		; Otherwise increment timeout timer
+	BEQ	GETWF		; And continue waiting.	
+WFDNE:	RTS
+	
 ;;; Display Message via E:
+	
 DISPMSG:
 	LDX	#$00		; E: (IOCB #0)
 	LDA	#PUTREC		; PUT Record
@@ -206,6 +271,19 @@ SIOVDST:
 	TYA			; Copy it into A	
 	RTS			; Done
 
+;;; DCB table for wifi status
+
+WFTBL:
+	.BYTE $70		; DDEVIC = $70 (Fuji)
+	.BYTE $01		; DUNIT = 1
+	.BYTE $FA		; DCOMND = Get WIFI status
+	.BYTE $40		; DSTATS = -> ATARI
+	.WORD WFST 		; DBUF = WFST
+	.BYTE $0F		; DTIMLO = 15 seconds.
+	.BYTE $00		; DRESVD = $00
+	.WORD 1			; one byte
+	.WORD $00		; DAUX = 0	
+	
 ;;; DCB table for set boot mode
 
 BMTBL:
@@ -234,8 +312,9 @@ PREPAD:	.WORD $00		; DAUX = 0
 
 BOOT1:	.BY "PRESS "
 	.BY +$80 " SELECT "
-	.BY " TO BOOT CONFIG         "
-	.BY "MOUNTING ALL SLOTS...",$9B
+	.BY " TO BOOT CONFIG",$9B
+BOOTWF:	.BY "WAITING FOR WIFI...",$9B
+BOOTMT:	.BY "MOUNTING ALL SLOTS...",$9B
 BOOTOK:	.BY "OK. BOOTING in 4 SECONDS",$9B
 BOOTNO:	.BY "BOOT FAILED. BOOTING CONFIG...",$9B
 BOOTSL:	.BY +$80 " SELECT "
