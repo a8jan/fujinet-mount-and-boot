@@ -6,8 +6,8 @@
 
 all: mount-and-boot.atr
 
-mount-and-boot.atr:
+mount-and-boot.atr: src/mount-and-boot.s
 	mads src/mount-and-boot.s -l:mount-and-boot.lst -o:mount-and-boot.atr
 
 clean:
-	rm -rf mount-and-boot.atr
+	rm -rf mount-and-boot.atr mount-and-boot.lst
