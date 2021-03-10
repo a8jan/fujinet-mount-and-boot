@@ -8,11 +8,15 @@
 
 	;; Zero Page
 
-DSOFF	= 	$80 		; Device Slot table offset
-HSOFF	=	$82		; Host Slot table offset
-CURDS	=	$83		; Current Device slot
-CURDSHS	=	$84		; Current Device Slot - Host Slot
-CURDSM	=	$85		; Current Device Slot - Mode
+RTCLOK0	=	$12
+RTCLOK1 =	$13
+RTCLOK2 =	$14
+	
+MSGL	= 	$80 		; MSG LO
+MSGH	= 	$81		; MSG HI
+SEL     =       $82		; Is select pressed? ($FF=yes)
+
+COLOR2	=	$02C6		; Background color (Mode 2)
 	
        ; PAGE 3
        ; DEVICE CONTROL BLOCK (DCB)
@@ -53,6 +57,9 @@ ICAX4   =     IOCB+13 ; AUX 4
 ICAX5   =     IOCB+14 ; AUX 5
 ICAX6   =     IOCB+15 ; AUX 6
 
+	;; Hardware Registers
+CONSOL	=	$D01F		; Console switches
+	
        ; OS ROM VECTORS
 
 CIOV    =     $E456   ; CIO ENTRY
@@ -86,71 +93,103 @@ HSENT	=	32
 ATR:
 	.BYTE $96,$02,$80,$16,$80,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00 ; Hack
 HDR:
-	.BYTE $00,SECLEN,$00,$70,$C0,$E4
+	.BYTE $00,SECLEN,$00,$07,$C0,$E4
 
 START:
-	;; Read Host slots
+	;; Display Boot message
 	
-	LDA	#<RHSTBL
-	LDY	#>RHSTBL
+	LDA	#<BOOT1
+	STA	MSGL
+	LDA	#>BOOT1
+	STA	MSGH
+	JSR	DISPMSG
+
+	;; Send mount all command to #FujiNet
+	LDA	#<MATBL
+	LDY	#>MATBL
 	JSR	DOSIOV
 
-	;; Read Device Slots
+	;; Check if ok, and change screen color if not.
+	LDA	DSTATS		; Get status of mount all
+	BPL	GDBOOT		; > 128 = ERROR
 
-	LDA	#<RDSTBL
-	LDY	#>RDSTBL
+	;; Boot was bad.
+	
+MTERR:	LDA	#$44		; Error, change screen to red
+	STA	COLOR2
+	LDA	#<BOOTNO	; and display boot failed.
+	STA	MSGL
+	LDA	#>BOOTNO
+	STA	MSGH
+	JSR	DISPMSG
+
+	;; Issue boot mode change to config.
+	LDA	#<BMTBL		; Point to set boot mode table
+	LDY	#>BMTBL
+	JSR	DOSIOV		; Issue command.
+	JMP	GOCOLD		; Go cold.
+
+	;; Otherwise, Boot was good.
+	
+GDBOOT:	LDA	#<BOOTOK
+	STA	MSGL
+	LDA	#>BOOTOK
+	STA	MSGH
+	JSR	DISPMSG
+
+	;; Count down, while checking for select.
+	
+GOCOLD: LDA	#$00		; Clear clock
+	STA	RTCLOK0
+	STA	RTCLOK1
+	STA	RTCLOK2
+
+CLLP:	LDA	CONSOL		; Check console switches
+	CMP	#$05
+	BNE	CLLP2		; Continue with loop
+
+	;; SELECT pressed, display message, set boot config mode, go cold.
+
+SELPR:	LDA	SEL		; Check select
+	BMI	CLLP2		; If already pressed, we continue loop
+	LDA	#$B4		; Select just pressed, turn Green
+	STA	COLOR2		; Background
+	LDA	#<BOOTSL	; Set up select pressed msg
+	STA	MSGL		
+	LDA	#>BOOTSL
+	STA	MSGH
+	JSR	DISPMSG		; Display it
+	LDA	#$FF		; Indicate we've displayed msg
+	STA	SEL		; so it's not displayed again.
+	
+	LDA	#<BMTBL		; set up set boot mode command
+	LDY	#>BMTBL
 	JSR	DOSIOV
 
-	;;  Set table offsets for each
-	LDA	#<HS
-	STA	HSOFF
-	LDA	#>HS
-	STA	HSOFF+1
-	LDA	#<DS
-	STA	DSOFF
-	LDA	#>DS
-	STA	DSOFF+1
-
-	;; X = Device slot index
-	;; Y = Offset in table (for host slot and mode)
+	;; Otherwise continue on loop.
 	
-	;; Is device slot occupied? (is there a host slot that isn't $FF?)
-	LDY	#$00		; Start at 0
-	LDX	#$00		; Start at 0 (Device slot 1)
-GHS:	LDA	(DSOFF),Y	; Get Host slot (first byte of table)
-	CMP	#$FF		; Is it an empty host slot?
-	BEQ	NXTDS		; Yes, go to next device slot.
+CLLP2:	LDX	RTCLOK2		; Read hi byte of clock
+	CPX	#$FE		; Done?
+	BCS	BYE		; Yup, bye
+	BCC	CLLP		; Nope
+BYE:	JMP	COLDST		; Cold boot.
 
-	;; Attempt to mount host.
-	STA	MHS		; Store in mount host slot table
-	LDA	#<MHSTBL	; Mount Host Slot table
-	LDY	#>MHSTBL	; ...
-	JSR	DOSIOV		; Do it.
-
-	;; Attempt to mount device slot
-	STX	MDSS		; Store Device Slot into mount device slot DCB table
-	LDY	#$01		; mode is offset 1 in retrieved device slot table
-	LDA	(DSOFF),Y	; Get mode
-	STA	MDSM		; Store in mode portion of DCB table
-	LDA	#<MDSTBL	; Mount Device Slot DCB table
-	LDY	#>MDSTBL	; ...
-	JSR	DOSIOV
-
-	;; Go to next device slot
-NXTDS:	CPX	#$08	        ; Are we at end?
-	BEQ	DONE		; We're done.
-	CLC			; Otherwise, Clear carry
-	LDA	DSOFF		; Low byte of device slot table offset
-	ADC	#DSENT		; Add 38.
-	STA	DSOFF		; And store
-	LDA	DSOFF+1		; High byte of device slot table offset
-	ADC	#00		; ...
-	STA	DSOFF+1		; Write back out with carry.
-	INX			; Next host slot index.
-	JMP	GHS		; Get next host slot.
+;;; Display Message via E:
+DISPMSG:
+	LDX	#$00		; E: (IOCB #0)
+	LDA	#PUTREC		; PUT Record
+	STA	ICCOM,X		
+	LDA	MSGL
+	STA	ICBAL,X
+	LDA	MSGH
+	STA	ICBAH,X
+	LDA	#$7F		; 128 bytes max
+	STA	ICBLL,X
+	LDA	#$00
+	STA	ICBLH,X
+	JSR	CIOV
+	RTS
 	
-DONE:	JMP	COLDST		; Cold boot.
-
 ;;; COPY TABLE TO DCB AND DO SIO CALL ;;;;;;;;;;;
 
 DOSIOV: STA	DODCBL+1	; Set source address
@@ -167,58 +206,42 @@ SIOVDST:
 	TYA			; Copy it into A	
 	RTS			; Done
 
-;;; DCB table for Read Host Slots
+;;; DCB table for set boot mode
 
-RHSTBL:
+BMTBL:
 	.BYTE $70		; DDEVIC = $70 (Fuji)
 	.BYTE $01		; DUNIT = 1
-	.BYTE $F4		; DCOMND = Read host Slots
-	.BYTE $40		; DSTATS = Read
-	.WORD HS		; DBUF = Put buffer at end of memory
-	.BYTE $0F		; DTIMLO = 15 seconds.
-	.BYTE $00		; DRESVD = $00
-	.WORD HSLEN		; DBYT
-	.WORD $00		; DAUX = 0
-	
-;;; DCB table for Read Device Slots
-
-RDSTBL:
-	.BYTE $70		; DDEVIC = $70 (Fuji)
-	.BYTE $01		; DUNIT = 1
-	.BYTE $F2		; DCOMND = Read Device Slots
-	.BYTE $40		; DSTATS = Read
-	.WORD DS		; DBUF = Put buffer at end of memory
-	.BYTE $0F		; DTIMLO = 15 seconds.
-	.BYTE $00		; DRESVD = $00
-	.WORD DSLEN		; DBYT
-	.WORD $00		; DAUX = 0
-
-;;; DCB table for Mount Host Slot
-
-MHSTBL:
-	.BYTE $70		; DDEVIC = $70 (Fuji)
-	.BYTE $01		; DUNIT = 1
-	.BYTE $F9		; DCOMND = mount host slot
-	.BYTE $00		; DSTATS = no payload
-	.WORD 0000		; DBUF = Put buffer at end of memory
+	.BYTE $D6		; DCOMND = Mount all
+	.BYTE $00		; DSTATS = None
+	.WORD 0 		; DBUF = Put buffer at end of memory
 	.BYTE $0F		; DTIMLO = 15 seconds.
 	.BYTE $00		; DRESVD = $00
 	.WORD 0			; DBYT
-MHS:	.byte $FF		; DAUX1 = host slot
+	.WORD $00		; DAUX = 0 = Boot into CONFIG	
 	
-;;; DCB table for Mount Device Slot
+;;; DCB table for Read Host Slots
 
-MDSTBL:
+MATBL:
 	.BYTE $70		; DDEVIC = $70 (Fuji)
 	.BYTE $01		; DUNIT = 1
-	.BYTE $F8		; DCOMND = mount device slot
-	.BYTE $40		; DSTATS = no payload
-	.WORD 0000		; DBUF = no buffer
-	.BYTE $0F		; DTIMLO = 15 seconds.
+	.BYTE $D7		; DCOMND = Mount all
+	.BYTE $00		; DSTATS = None
+	.WORD 0 		; DBUF = Put buffer at end of memory
+	.BYTE $FE		; DTIMLO = 4 min 15 seconds.
 	.BYTE $00		; DRESVD = $00
-	.WORD 0			; DBYT = no payload
-MDSS:	.BYTE $FF		; DAUX1 = Host slot # (0-7)
-MDSM:	.BYTE $FF		; DAUX2 = Mode.
+	.WORD 0			; DBYT
+PREPAD:	.WORD $00		; DAUX = 0
+
+BOOT1:	.BY "PRESS "
+	.BY +$80 " SELECT "
+	.BY " TO BOOT CONFIG         "
+	.BY "MOUNTING ALL SLOTS...",$9B
+BOOTOK:	.BY "OK. BOOTING in 4 SECONDS",$9B
+BOOTNO:	.BY "BOOT FAILED. BOOTING CONFIG...",$9B
+BOOTSL:	.BY +$80 " SELECT "
+	.BY " PRESSED, BOOTING CONFIG...",$9B
+	
+	.PRINT "Code Size Before Padding: ",PREPAD-START
 	
 	.BYTE	$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00 ; For padding calc below.
 	
@@ -228,6 +251,4 @@ END:
 	.PRINT "HDR: ",HDR
 	.PRINT "END: ",END
 	.PRINT "Number of Sectors: ",SECLEN
-
-HS:	.DS	256		; Hostslot data
-DS:	.DS	304		; DeviceSlot data
+	
