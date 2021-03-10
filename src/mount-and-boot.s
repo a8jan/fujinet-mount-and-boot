@@ -85,7 +85,10 @@ HSLEN	=	304
 	;; Entry sizes in bytes
 DSENT	=	38
 HSENT	=	32
-	
+
+	;; Wait clock time
+WAITCLK	=	$FE
+
 	;; Code begin
 	
 	ORG	$06F0		; $0700 MEMLO - 16 byte ATR paragraph.
@@ -153,15 +156,30 @@ GDBOOT:	LDA	#<BOOTOK
 	;; Count down, while checking for select.
 	
 GOCOLD: JSR	RTCLR		; Clear RTCLOK
-CLLP:	LDA	CONSOL		; Check console switches
+
+CLLP:	LDA	SEL		; if OPTION or SELECT already pressed
+	BMI	CLLP2		; skip console check, wait for clock
+
+	LDA	CONSOL		; Check console switches
 	CMP	#$05
+	BEQ	SELPR		; SELECT pressed
+	CMP	#$03
 	BNE	CLLP2		; Continue with loop
+
+	;; OPTION pressed, display message, go cold.
+
+	LDA	#<BOOTOP	; Set up option pressed msg
+	STA	MSGL		
+	LDA	#>BOOTOP
+	STA	MSGH
+	JSR	DISPMSG		; Display it
+	LDA	#$FF		; Indicate we've displayed msg
+	STA	SEL		; so it's not displayed again.
+	BNE	WSEC		; and wait
 
 	;; SELECT pressed, display message, set boot config mode, go cold.
 
-SELPR:	LDA	SEL		; Check select
-	BMI	CLLP2		; If already pressed, we continue loop
-	LDA	#$B4		; Select just pressed, turn Green
+SELPR:	LDA	#$B4		; Select just pressed, turn Green
 	STA	COLOR2		; Background
 	LDA	#<BOOTSL	; Set up select pressed msg
 	STA	MSGL		
@@ -175,10 +193,13 @@ SELPR:	LDA	SEL		; Check select
 	LDY	#>BMTBL
 	JSR	DOSIOV
 
+WSEC:	LDA	#WAITCLK-50	; set clock to wait cca 1 sec
+	STA	RTCLOK2
+
 	;; Otherwise continue on loop.
 	
 CLLP2:	LDX	RTCLOK2		; Read hi byte of clock
-	CPX	#$FE		; Done?
+	CPX	#WAITCLK	; Done?
 	BCS	BYE		; Yup, bye
 	BCC	CLLP		; Nope
 BYE:	JMP	COLDST		; Cold boot.
@@ -319,10 +340,12 @@ BOOTOK:	.BY "OK. BOOTING in 4 SECONDS",$9B
 BOOTNO:	.BY "BOOT FAILED. BOOTING CONFIG...",$9B
 BOOTSL:	.BY +$80 " SELECT "
 	.BY " PRESSED, BOOTING CONFIG...",$9B
-	
+BOOTOP:	.BY " BOOTING ...",$9B
+MSGEND:
+
 	.PRINT "Code Size Before Padding: ",PREPAD-START
 	
-	.BYTE	$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00 ; For padding calc below.
+	;.BYTE	$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00 ; For padding calc below.
 	
 	.ALIGN	$80,$00		; 128 byte align for sectors.
 
